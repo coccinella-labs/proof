@@ -34,7 +34,7 @@ Deterministic PR body review. Checks structure, word count, issue links, file an
 | require-sections | Comma-separated required headings | `## Changes,## Validation` |
 | check-anchors | Verify file:line references | `true` |
 | check-em-dashes | Flag em dash characters | `true` |
-| comment | Post report as PR comment: `always`, `on-failure`, `never` | `on-failure` |
+| comment | Post report as PR comment: `always`, `on-failure`, `never`. Reruns update the existing report comment instead of stacking new ones. | `on-failure` |
 
 ## Outputs
 
