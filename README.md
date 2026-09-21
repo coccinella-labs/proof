@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/coccinella-labs/proof/main/.github/assets/thumbnail.png" alt="proof" width="100%">
+</p>
+
 # Proof
 
 Deterministic PR body review. Checks structure, word count, issue links, file anchors, and house style. No model, no API keys beyond the GitHub token.
