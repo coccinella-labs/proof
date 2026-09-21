@@ -11,7 +11,7 @@ Deterministic PR body review. Checks structure, word count, issue links, file an
 - Title matches `[scope] message`.
 - Required sections present (default `## Changes`, `## Validation`).
 - Body word count within range (default 30-400).
-- `Closes`/`Fixes`/`Resolves #N` references point at real open issues.
+- `Closes`/`Fixes`/`Resolves #N` references point at real open issues (skipped once the PR itself is closed, where a closed target means the link served its purpose).
 - `file:line` references resolve against the PR head (file exists, line in range).
 - House style (no em dashes by default).
 
