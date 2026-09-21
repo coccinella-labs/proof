@@ -182,5 +182,15 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
         if [ "$INPUT_COMMENT" = "always" ] || { [ "$INPUT_COMMENT" = "on-failure" ] && [ "$PASS" != "true" ]; }; then
-          gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$REPORT"
+          # Update the existing proof report if there is one, so reruns
+          # refresh a single comment instead of stacking new ones.
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate \
+            --jq "[.[] | select(.body | startswith(\"## Proof report for #$NUMBER\")) | .id] | first // empty" 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -X PATCH \
+              -f body="$REPORT" --silent
+            echo "Updated existing proof report."
+          else
+            gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$REPORT"
+          fi
         fi
