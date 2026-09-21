@@ -1,0 +1,186 @@
+---
+name: Proof
+description: Deterministic PR body review. Checks structure, word count, issue links, file anchors, and house style. No model, no API keys beyond the GitHub token.
+
+inputs:
+  github-token:
+    description: GitHub token for API access
+    required: false
+    default: ${{ github.token }}
+  pr-number:
+    description: Pull request number to review. Defaults to the current event.
+    required: false
+    default: ""
+  min-words:
+    description: Minimum body word count
+    required: false
+    default: "30"
+  max-words:
+    description: Maximum body word count
+    required: false
+    default: "400"
+  require-sections:
+    description: Comma-separated markdown headings the body must contain
+    required: false
+    default: "## Changes,## Validation"
+  check-anchors:
+    description: Verify file:line references resolve against the PR head
+    required: false
+    default: "true"
+  check-em-dashes:
+    description: Flag em dash characters per house style
+    required: false
+    default: "true"
+  comment:
+    description: "When to post the report as a PR comment: always, on-failure, or never"
+    required: false
+    default: "on-failure"
+
+outputs:
+  passed:
+    description: Whether all checks passed
+    value: ${{ steps.proof.outputs.passed }}
+  summary:
+    description: Markdown report of the checks
+    value: ${{ steps.proof.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - id: proof
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_MIN_WORDS: ${{ inputs.min-words }}
+        INPUT_MAX_WORDS: ${{ inputs.max-words }}
+        INPUT_SECTIONS: ${{ inputs.require-sections }}
+        INPUT_ANCHORS: ${{ inputs.check-anchors }}
+        INPUT_EMDASH: ${{ inputs.check-em-dashes }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+      run: |
+        set -uo pipefail
+
+        if [ -n "$INPUT_PR_NUMBER" ]; then
+          NUMBER="$INPUT_PR_NUMBER"
+        else
+          NUMBER="${{ github.event.pull_request.number }}"
+        fi
+        if [ -z "$NUMBER" ]; then
+          echo "No pull request number: set pr-number or run on a pull_request event." >&2
+          exit 1
+        fi
+
+        PR_JSON=$(gh pr view "$NUMBER" --json title,body,headRefOid)
+        TITLE=$(printf '%s' "$PR_JSON" | jq -r '.title')
+        BODY=$(printf '%s' "$PR_JSON" | jq -r '.body // ""')
+        HEAD_SHA=$(printf '%s' "$PR_JSON" | jq -r '.headRefOid')
+
+        PASS=true
+        REPORT="## Proof report for #$NUMBER"
+        REPORT="$REPORT"$'\n'
+
+        note() {
+          REPORT="$REPORT"$'\n'"- $1"
+        }
+        fail() {
+          PASS=false
+          note "FAIL: $1"
+        }
+
+        # Title convention: [scope] message
+        if ! printf '%s\n' "$TITLE" | grep -Eq '^\[(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test)\][[:space:]].+'; then
+          fail "title does not match \`[scope] message\` (saw: $TITLE)"
+        else
+          note "title convention ok"
+        fi
+
+        # Required sections
+        IFS=',' read -ra SECTIONS <<< "$INPUT_SECTIONS"
+        for section in "${SECTIONS[@]}"; do
+          section=$(printf '%s' "$section" | xargs)
+          [ -z "$section" ] && continue
+          if printf '%s' "$BODY" | grep -Fq "$section"; then
+            note "section present: $section"
+          else
+            fail "missing section: $section"
+          fi
+        done
+
+        # Word count
+        WORDS=$(printf '%s' "$BODY" | wc -w | tr -d ' ')
+        if [ "$WORDS" -lt "$INPUT_MIN_WORDS" ] || [ "$WORDS" -gt "$INPUT_MAX_WORDS" ]; then
+          fail "body is $WORDS words, want $INPUT_MIN_WORDS-$INPUT_MAX_WORDS"
+        else
+          note "word count ok ($WORDS)"
+        fi
+
+        # Closing references point at real open issues
+        REFS=$(printf '%s' "$BODY" | grep -oEi '(closes|fixes|resolves) #[0-9]+' | grep -oE '[0-9]+' || true)
+        if [ -z "$REFS" ]; then
+          note "no closing references (ok if intentional)"
+        fi
+        for ref in $REFS; do
+          STATE=$(gh issue view "$ref" --json state -q .state 2>/dev/null || echo "missing")
+          if [ "$STATE" = "OPEN" ]; then
+            note "closes #$ref (open)"
+          else
+            fail "closes #$ref but it is $STATE"
+          fi
+        done
+
+        # File anchors resolve against the PR head
+        if [ "$INPUT_ANCHORS" = "true" ]; then
+          ANCHORS=$(printf '%s' "$BODY" | grep -oE '[A-Za-z0-9_./-]+\.[a-zA-Z]{1,5}:[0-9]+' | sort -u || true)
+          if [ -z "$ANCHORS" ]; then
+            note "no file anchors to check"
+          fi
+          declare -A FILE_LINES=()
+          for anchor in $ANCHORS; do
+            file="${anchor%:*}"
+            line="${anchor##*:}"
+            if [ -z "${FILE_LINES[$file]+x}" ]; then
+              CONTENT=$(gh api "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" -q .content 2>/dev/null | base64 -d 2>/dev/null || echo "")
+              if [ -z "$CONTENT" ]; then
+                fail "anchor file missing at head: $file"
+                FILE_LINES[$file]=0
+                continue
+              fi
+              FILE_LINES[$file]=$(printf '%s' "$CONTENT" | wc -l | tr -d ' ')
+            fi
+            total="${FILE_LINES[$file]}"
+            if [ "$total" = "0" ]; then
+              continue
+            elif [ "$line" -ge 1 ] && [ "$line" -le "$total" ]; then
+              note "anchor ok: $anchor"
+            else
+              fail "anchor out of range: $anchor (file has $total lines)"
+            fi
+          done
+        fi
+
+        # House style: em dashes
+        if [ "$INPUT_EMDASH" = "true" ]; then
+          if printf '%s' "$TITLE $BODY" | grep -q "—"; then
+            fail "em dash found; house style prefers colons and commas"
+          else
+            note "no em dashes"
+          fi
+        fi
+
+        if [ "$PASS" = "true" ]; then
+          REPORT="$REPORT"$'\n'"Result: PASS"
+        else
+          REPORT="$REPORT"$'\n'"Result: FAIL"
+        fi
+
+        {
+          echo "passed=$PASS"
+          echo "summary<<PROOFEOF"
+          printf '%s\n' "$REPORT"
+          echo "PROOFEOF"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ "$INPUT_COMMENT" = "always" ] || { [ "$INPUT_COMMENT" = "on-failure" ] && [ "$PASS" != "true" ]; }; then
+          gh pr comment "$NUMBER" --body "$REPORT"
+        fi
