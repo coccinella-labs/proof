@@ -71,10 +71,11 @@ runs:
           exit 1
         fi
 
-        PR_JSON=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,headRefOid)
+        PR_JSON=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,headRefOid,state)
         TITLE=$(printf '%s' "$PR_JSON" | jq -r '.title')
         BODY=$(printf '%s' "$PR_JSON" | jq -r '.body // ""')
         HEAD_SHA=$(printf '%s' "$PR_JSON" | jq -r '.headRefOid')
+        PR_STATE=$(printf '%s' "$PR_JSON" | jq -r '.state')
 
         PASS=true
         REPORT="## Proof report for #$NUMBER"
@@ -115,11 +116,16 @@ runs:
           note "word count ok ($WORDS)"
         fi
 
-        # Closing references point at real open issues
+        # Closing references point at real open issues, but only while
+        # this PR is itself open. On a merged PR a closed target means the
+        # link already served its purpose.
         REFS=$(printf '%s' "$BODY" | grep -oEi '(closes|fixes|resolves) #[0-9]+' | grep -oE '[0-9]+' || true)
         if [ -z "$REFS" ]; then
           note "no closing references (ok if intentional)"
+        elif [ "$PR_STATE" != "OPEN" ]; then
+          note "PR $PR_STATE; closing references already served"
         fi
+        if [ -n "$REFS" ] && [ "$PR_STATE" = "OPEN" ]; then
         for ref in $REFS; do
           STATE=$(gh issue view "$ref" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || echo "missing")
           if [ "$STATE" = "OPEN" ]; then
@@ -128,6 +134,7 @@ runs:
             fail "closes #$ref but it is $STATE"
           fi
         done
+        fi
 
         # File anchors resolve against the PR head
         if [ "$INPUT_ANCHORS" = "true" ]; then
